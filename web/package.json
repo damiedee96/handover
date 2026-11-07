@@ -1,0 +1,30 @@
+{
+  "name": "handover-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stellar/freighter-api": "^6.0.1",
+    "@stellar/stellar-sdk": "13.2.0",
+    "qrcode.react": "4.2.0",
+    "react": "19.1.8",
+    "react-dom": "19.1.8",
+    "react-router-dom": "6.30.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.8",
+    "@types/react-dom": "19.1.5",
+    "@vitejs/plugin-react": "4.3.4",
+    "typescript": "5.8.3",
+    "vite": "6.4.5"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
+  }
+}

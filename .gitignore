@@ -1,0 +1,12 @@
+# Rust
+target/
+Cargo.lock
+
+# Node
+web/node_modules/
+web/dist/
+web/.env
+
+# Misc
+.DS_Store
+*.swp
