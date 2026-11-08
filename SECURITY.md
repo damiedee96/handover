@@ -12,7 +12,7 @@ Mainnet to hold real funds.
 
 Email a description of the issue to:
 
-**security@handover.example** ← replace with your real address before publishing
+mdeelive@gmail.com
 
 Include:
 
