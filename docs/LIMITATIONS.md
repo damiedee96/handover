@@ -34,13 +34,13 @@ implement restore; you would need to use the Stellar CLI.
 
 ---
 
-## Bearer-secret trust
+## Recipient key trust
 
-The secret is a 128-bit random value. Whoever possesses the plaintext secret
-can cause `complete_delivery` to succeed, provided they also control the
-courier's Stellar key. The system assumes the recipient keeps the secret
-confidential and only reveals it at physical handoff. There is no
-cryptographic proof that handoff actually occurred.
+The protocol requires the recipient to have a funded Stellar account and the
+Freighter wallet extension. If the recipient loses access to their private key
+before calling `confirm_receipt`, the courier cannot be paid and the sender's
+only recourse is to wait for expiry and refund. There is no key-recovery
+mechanism on-chain.
 
 ---
 
@@ -62,9 +62,9 @@ shown in the UI is an approximation based on 17,280 ledgers per day.
 
 ## Secret known to the sender
 
-The sender generates the secret and therefore knows it. A malicious sender
-could share the secret with the courier directly, bypassing the recipient.
-The protocol assumes the sender is honest.
+Delivery completion no longer relies on a bearer secret. Completion requires
+the recipient's on-chain signature via `confirm_receipt`. The sender cannot
+trigger completion on the recipient's behalf.
 
 ---
 

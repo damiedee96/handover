@@ -108,6 +108,8 @@ export function StatusPage() {
             <dd className="addr">{state.delivery.sender}</dd>
             <dt>Courier</dt>
             <dd className="addr">{state.delivery.courier}</dd>
+            <dt>Recipient</dt>
+            <dd className="addr">{state.delivery.recipient}</dd>
             <dt>Amount</dt>
             <dd>{(Number(state.delivery.amount) / 1e7).toFixed(7)}</dd>
             <dt>Released</dt>

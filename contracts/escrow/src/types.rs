@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, contracttype, Address, BytesN, Env};
+use soroban_sdk::{contractevent, contracttype, Address, Env};
 
 /// Status of a delivery.
 #[contracttype]
@@ -8,7 +8,7 @@ pub enum Status {
     Created,
     /// Courier confirmed pickup; pickup fraction already released.
     PickedUp,
-    /// Delivery completed; remainder released.
+    /// Recipient confirmed receipt; remainder released to courier.
     Completed,
     /// Refunded to sender after expiry.
     Refunded,
@@ -22,12 +22,12 @@ pub struct Delivery {
     pub sender: Address,
     /// Account that picks up and delivers the parcel.
     pub courier: Address,
+    /// Account that receives the parcel and confirms receipt.
+    pub recipient: Address,
     /// SAC / token contract address.
     pub token: Address,
     /// Total amount locked (token's smallest unit).
     pub amount: i128,
-    /// SHA-256 of the delivery secret (32 bytes).
-    pub secret_hash: BytesN<32>,
     /// Basis-points (0-5000) released on pickup.
     pub pickup_bps: u32,
     /// Ledger sequence after which the sender may refund.
@@ -46,6 +46,7 @@ pub struct DeliveryCreated {
     pub id: u64,
     pub sender: Address,
     pub courier: Address,
+    pub recipient: Address,
     pub amount: i128,
 }
 
@@ -56,11 +57,11 @@ pub struct PickupConfirmed {
     pub pickup_released: i128,
 }
 
-/// Emitted when the delivery is completed and the remainder released.
+/// Emitted when the recipient confirms receipt and the remainder is released.
 #[contractevent]
-pub struct DeliveryCompleted {
+pub struct ReceiptConfirmed {
     pub id: u64,
-    pub total_released: i128,
+    pub remainder_released: i128,
 }
 
 /// Emitted when the sender reclaims funds after expiry.
@@ -71,11 +72,19 @@ pub struct DeliveryRefunded {
 }
 
 /// Emit a `DeliveryCreated` event.
-pub fn emit_created(env: &Env, id: u64, sender: Address, courier: Address, amount: i128) {
+pub fn emit_created(
+    env: &Env,
+    id: u64,
+    sender: Address,
+    courier: Address,
+    recipient: Address,
+    amount: i128,
+) {
     env.events().publish_event(&DeliveryCreated {
         id,
         sender,
         courier,
+        recipient,
         amount,
     });
 }
@@ -88,10 +97,12 @@ pub fn emit_pickup(env: &Env, id: u64, pickup_released: i128) {
     });
 }
 
-/// Emit a `DeliveryCompleted` event.
-pub fn emit_completed(env: &Env, id: u64, total_released: i128) {
-    env.events()
-        .publish_event(&DeliveryCompleted { id, total_released });
+/// Emit a `ReceiptConfirmed` event.
+pub fn emit_receipt(env: &Env, id: u64, remainder_released: i128) {
+    env.events().publish_event(&ReceiptConfirmed {
+        id,
+        remainder_released,
+    });
 }
 
 /// Emit a `DeliveryRefunded` event.

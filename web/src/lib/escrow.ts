@@ -16,7 +16,6 @@ import {
   nativeToScVal,
   scValToNative,
   Address,
-  hash,
 } from "@stellar/stellar-sdk";
 import { ENV, NETWORK_PASSPHRASE } from "./env";
 import { signTx } from "./wallet";
@@ -33,9 +32,9 @@ export interface Delivery {
   id: bigint;
   sender: string;
   courier: string;
+  recipient: string;
   token: string;
   amount: bigint;
-  secretHash: Uint8Array;
   pickupBps: number;
   expiryLedger: number;
   status: DeliveryStatus;
@@ -52,19 +51,6 @@ function rpcServer(): rpc.Server {
   return new rpc.Server(ENV.rpcUrl, { allowHttp: false });
 }
 
-/** SHA-256 hash of a UTF-8 string, returned as a Uint8Array. */
-export function sha256Bytes(secret: string): Uint8Array {
-  const bytes = new TextEncoder().encode(secret);
-  // hash() from stellar-sdk accepts a Buffer-like; Uint8Array is compatible.
-  return hash(bytes as unknown as Parameters<typeof hash>[0]);
-}
-
-/** Encode arbitrary bytes as an xdr ScVal Bytes value. */
-function bytesToScVal(bytes: Uint8Array): xdr.ScVal {
-  // xdr.ScVal.scvBytes is typed as Buffer but accepts Uint8Array at runtime.
-  return xdr.ScVal.scvBytes(bytes as unknown as Parameters<typeof xdr.ScVal.scvBytes>[0]);
-}
-
 /** Parse the raw ScVal map returned by get_delivery into a Delivery object. */
 function parseDelivery(id: bigint, raw: unknown): Delivery {
   const obj = raw as Record<string, unknown>;
@@ -72,9 +58,9 @@ function parseDelivery(id: bigint, raw: unknown): Delivery {
     id,
     sender: obj["sender"] as string,
     courier: obj["courier"] as string,
+    recipient: obj["recipient"] as string,
     token: obj["token"] as string,
     amount: BigInt(obj["amount"] as string | number),
-    secretHash: obj["secret_hash"] as Uint8Array,
     pickupBps: Number(obj["pickup_bps"]),
     expiryLedger: Number(obj["expiry_ledger"]),
     status: obj["status"] as DeliveryStatus,
@@ -102,7 +88,6 @@ async function invoke(
     .setTimeout(30)
     .build();
 
-  // Simulate to get the correct resource fees and read/write footprint.
   const simResult = await server.simulateTransaction(tx);
   if (rpc.Api.isSimulationError(simResult)) {
     throw new Error(`Simulation error: ${simResult.error}`);
@@ -121,7 +106,6 @@ async function invoke(
     throw new Error(`Submit error: ${JSON.stringify(submitResult.errorResult)}`);
   }
 
-  // Poll for finality.
   const txHash = submitResult.hash;
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 2000));
@@ -145,20 +129,20 @@ async function invoke(
 export async function createDelivery(params: {
   sender: string;
   courier: string;
+  recipient: string;
   amount: bigint;
-  secretHash: Uint8Array;
   pickupBps: number;
   expiryLedger: number;
 }): Promise<bigint> {
-  const { sender, courier, amount, secretHash, pickupBps, expiryLedger } =
+  const { sender, courier, recipient, amount, pickupBps, expiryLedger } =
     params;
 
   const args: xdr.ScVal[] = [
     new Address(sender).toScVal(),
     new Address(courier).toScVal(),
+    new Address(recipient).toScVal(),
     new Address(ENV.tokenContractId()).toScVal(),
     nativeToScVal(amount, { type: "i128" }),
-    bytesToScVal(secretHash),
     nativeToScVal(pickupBps, { type: "u32" }),
     nativeToScVal(expiryLedger, { type: "u32" }),
   ];
@@ -175,16 +159,18 @@ export async function confirmPickup(
   await invoke(courier, "confirm_pickup", [nativeToScVal(id, { type: "u64" })]);
 }
 
-/** complete_delivery – must be called by the courier with the plaintext secret. */
-export async function completeDelivery(
-  courier: string,
+/**
+ * confirm_receipt – must be called by the RECIPIENT.
+ *
+ * Releases the remainder of the escrow to the courier.
+ * The courier cannot call this function — that is the security guarantee.
+ */
+export async function confirmReceipt(
+  recipient: string,
   id: bigint,
-  secret: string,
 ): Promise<void> {
-  const secretBytes = new TextEncoder().encode(secret);
-  await invoke(courier, "complete_delivery", [
+  await invoke(recipient, "confirm_receipt", [
     nativeToScVal(id, { type: "u64" }),
-    bytesToScVal(secretBytes),
   ]);
 }
 
@@ -198,7 +184,6 @@ export async function getDelivery(id: bigint): Promise<Delivery> {
   const server = rpcServer();
   const contract = new Contract(ENV.escrowContractId());
 
-  // A well-known funded account used only to satisfy the builder's type.
   const HORIZON_FRIENDLY =
     "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
 

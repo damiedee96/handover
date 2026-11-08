@@ -1,15 +1,10 @@
-use soroban_sdk::{contract, contractimpl, token, Address, Bytes, BytesN, Env};
+use soroban_sdk::{contract, contractimpl, token, Address, Env};
 
 use crate::{
     error::Error,
     storage,
-    types::{emit_completed, emit_created, emit_pickup, emit_refunded, Delivery, Status},
+    types::{emit_created, emit_pickup, emit_receipt, emit_refunded, Delivery, Status},
 };
-
-/// Compute SHA-256 of `data` and return 32-byte result.
-fn sha256(env: &Env, data: &Bytes) -> BytesN<32> {
-    env.crypto().sha256(data).into()
-}
 
 /// Transfer `amount` of `token` from `from` to `to`.
 fn transfer(env: &Env, token: &Address, from: &Address, to: &Address, amount: i128) {
@@ -23,15 +18,18 @@ pub struct EscrowContract;
 impl EscrowContract {
     /// Create a new delivery and lock `amount` tokens in the contract.
     ///
+    /// `recipient` is the person who will receive the parcel and must call
+    /// `confirm_receipt` to release the remainder to the courier.
+    ///
     /// Returns the numeric delivery id.
     #[allow(clippy::too_many_arguments)]
     pub fn create_delivery(
         env: Env,
         sender: Address,
         courier: Address,
+        recipient: Address,
         token: Address,
         amount: i128,
-        secret_hash: BytesN<32>,
         pickup_bps: u32,
         expiry_ledger: u32,
     ) -> Result<u64, Error> {
@@ -59,9 +57,9 @@ impl EscrowContract {
         let delivery = Delivery {
             sender: sender.clone(),
             courier: courier.clone(),
+            recipient: recipient.clone(),
             token,
             amount,
-            secret_hash,
             pickup_bps,
             expiry_ledger,
             status: Status::Created,
@@ -69,14 +67,14 @@ impl EscrowContract {
         };
         storage::save_delivery(&env, id, &delivery);
 
-        emit_created(&env, id, sender, courier, amount);
+        emit_created(&env, id, sender, courier, recipient, amount);
         Ok(id)
     }
 
     /// Called by the courier once they physically collect the parcel.
     ///
-    /// Releases `pickup_bps / 10_000 * amount` tokens to the courier immediately.
-    /// Rejected if the delivery is already expired.
+    /// Releases `pickup_bps / 10_000 * amount` tokens to the courier.
+    /// Rejected if the delivery has already expired.
     pub fn confirm_pickup(env: Env, id: u64) -> Result<(), Error> {
         let mut delivery = storage::load_delivery(&env, id).ok_or(Error::NotFound)?;
 
@@ -115,13 +113,20 @@ impl EscrowContract {
         Ok(())
     }
 
-    /// Called by the courier with the plaintext secret after hand-off.
+    /// Called by the RECIPIENT after the parcel is physically in their hands.
     ///
-    /// Verifies SHA-256(secret) == secret_hash, then releases the remaining balance.
-    pub fn complete_delivery(env: Env, id: u64, secret: Bytes) -> Result<(), Error> {
+    /// Requires the recipient's authorization.  Releases the remaining balance
+    /// to the courier.  Only valid when status is PickedUp and before expiry.
+    ///
+    /// Security note: this separates the ability to trigger payment (recipient)
+    /// from the ability to receive payment (courier).  The courier alone cannot
+    /// call this function and therefore cannot steal the escrow by calling
+    /// confirm_pickup followed immediately by confirm_receipt.
+    pub fn confirm_receipt(env: Env, id: u64) -> Result<(), Error> {
         let mut delivery = storage::load_delivery(&env, id).ok_or(Error::NotFound)?;
 
-        delivery.courier.require_auth();
+        // Only the recipient may confirm receipt.
+        delivery.recipient.require_auth();
 
         if delivery.status != Status::PickedUp {
             return Err(Error::InvalidState);
@@ -129,11 +134,6 @@ impl EscrowContract {
 
         if env.ledger().sequence() > delivery.expiry_ledger {
             return Err(Error::InvalidState);
-        }
-
-        let hash: BytesN<32> = sha256(&env, &secret);
-        if hash != delivery.secret_hash {
-            return Err(Error::WrongSecret);
         }
 
         let remaining = delivery.amount - delivery.released;
@@ -151,7 +151,7 @@ impl EscrowContract {
         delivery.status = Status::Completed;
         storage::save_delivery(&env, id, &delivery);
 
-        emit_completed(&env, id, delivery.released);
+        emit_receipt(&env, id, remaining);
         Ok(())
     }
 

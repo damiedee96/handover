@@ -3,7 +3,7 @@
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger, LedgerInfo},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Bytes, BytesN, Env,
+    Address, Env,
 };
 
 use crate::{
@@ -16,17 +16,13 @@ use crate::{
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn make_hash(env: &Env, secret: &[u8]) -> BytesN<32> {
-    let h: BytesN<32> = env.crypto().sha256(&Bytes::from_slice(env, secret)).into();
-    h
-}
-
 struct Setup {
     env: Env,
     contract: Address,
     token: Address,
     sender: Address,
     courier: Address,
+    recipient: Address,
 }
 
 impl Setup {
@@ -36,6 +32,7 @@ impl Setup {
 
         let sender = Address::generate(&env);
         let courier = Address::generate(&env);
+        let recipient = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token = env
             .register_stellar_asset_contract_v2(token_admin)
@@ -49,6 +46,7 @@ impl Setup {
             token,
             sender,
             courier,
+            recipient,
         }
     }
 
@@ -74,89 +72,83 @@ impl Setup {
 }
 
 /// Helper: create a delivery and return its id.
-fn create_default(s: &Setup, secret_hash: BytesN<32>, pickup_bps: u32) -> u64 {
+fn create_default(s: &Setup, pickup_bps: u32) -> u64 {
     let expiry = s.expiry();
     s.client().create_delivery(
         &s.sender,
         &s.courier,
+        &s.recipient,
         &s.token,
         &100_000,
-        &secret_hash,
         &pickup_bps,
         &expiry,
     )
 }
 
+/// Helper: return count of events from the last invocation.
+fn event_count(env: &Env) -> usize {
+    env.events().all().events().len()
+}
+
 // ---------------------------------------------------------------------------
-// 1. Happy-path: full flow
+// 1. Happy-path: full flow (20 % pickup)
 // ---------------------------------------------------------------------------
 #[test]
 fn test_happy_path_full_flow() {
     let s = Setup::new();
-    let secret = b"correct-horse-battery-staple";
-    let hash = make_hash(&s.env, secret);
+    let id = create_default(&s, 2000); // 20 %
 
-    let id = create_default(&s, hash, 2000); // 20 %
     s.client().confirm_pickup(&id);
     assert_eq!(s.token_balance(&s.courier), 20_000);
 
-    s.client()
-        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client().confirm_receipt(&id);
     assert_eq!(s.token_balance(&s.courier), 100_000);
     assert_eq!(s.token_balance(&s.sender), 900_000);
 }
 
 // ---------------------------------------------------------------------------
-// 2. Zero pickup_bps
+// 2. Zero pickup_bps – all released on receipt
 // ---------------------------------------------------------------------------
 #[test]
 fn test_happy_path_zero_pickup() {
     let s = Setup::new();
-    let secret = b"zero-pickup";
-    let hash = make_hash(&s.env, secret);
-    let id = create_default(&s, hash, 0);
+    let id = create_default(&s, 0);
 
     s.client().confirm_pickup(&id);
     assert_eq!(s.token_balance(&s.courier), 0);
 
-    s.client()
-        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client().confirm_receipt(&id);
     assert_eq!(s.token_balance(&s.courier), 100_000);
 }
 
 // ---------------------------------------------------------------------------
-// 3. Max pickup_bps (5000)
+// 3. Max pickup_bps (5000 = 50 %)
 // ---------------------------------------------------------------------------
 #[test]
 fn test_happy_path_max_pickup_bps() {
     let s = Setup::new();
-    let secret = b"max-pickup";
-    let hash = make_hash(&s.env, secret);
-    let id = create_default(&s, hash, 5000);
+    let id = create_default(&s, 5000);
 
     s.client().confirm_pickup(&id);
     assert_eq!(s.token_balance(&s.courier), 50_000);
 
-    s.client()
-        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client().confirm_receipt(&id);
     assert_eq!(s.token_balance(&s.courier), 100_000);
 }
 
 // ---------------------------------------------------------------------------
-// 4. Rounding (floor division)
+// 4. Rounding – floor division
 // ---------------------------------------------------------------------------
 #[test]
 fn test_rounding() {
     let s = Setup::new();
-    let secret = b"rounding";
-    let hash = make_hash(&s.env, secret);
-    // amount=10_001, pickup_bps=1000 → pickup = floor(10001 * 1000 / 10000) = 1000
+    // amount=10_001, pickup_bps=1000 → floor(10001 * 1000 / 10000) = 1000
     let id = s.client().create_delivery(
         &s.sender,
         &s.courier,
+        &s.recipient,
         &s.token,
         &10_001,
-        &hash,
         &1000,
         &s.expiry(),
     );
@@ -164,55 +156,32 @@ fn test_rounding() {
     s.client().confirm_pickup(&id);
     assert_eq!(s.token_balance(&s.courier), 1_000);
 
-    s.client()
-        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client().confirm_receipt(&id);
     assert_eq!(s.token_balance(&s.courier), 10_001);
 }
 
 // ---------------------------------------------------------------------------
-// 5. Wrong secret
+// 5. Double-receipt rejected
 // ---------------------------------------------------------------------------
 #[test]
-fn test_wrong_secret() {
+fn test_double_receipt() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"real-secret");
-    let id = create_default(&s, hash, 1000);
-    s.client().confirm_pickup(&id);
-
-    let result = s
-        .client()
-        .try_complete_delivery(&id, &Bytes::from_slice(&s.env, b"wrong-secret"));
-    assert_eq!(result, Err(Ok(Error::WrongSecret)));
-}
-
-// ---------------------------------------------------------------------------
-// 6. Double-completion rejected
-// ---------------------------------------------------------------------------
-#[test]
-fn test_double_completion() {
-    let s = Setup::new();
-    let secret = b"double";
-    let hash = make_hash(&s.env, secret);
-    let id = create_default(&s, hash, 500);
+    let id = create_default(&s, 500);
 
     s.client().confirm_pickup(&id);
-    s.client()
-        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client().confirm_receipt(&id);
 
-    let result = s
-        .client()
-        .try_complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    let result = s.client().try_confirm_receipt(&id);
     assert_eq!(result, Err(Ok(Error::InvalidState)));
 }
 
 // ---------------------------------------------------------------------------
-// 7. Double-pickup rejected
+// 6. Double-pickup rejected
 // ---------------------------------------------------------------------------
 #[test]
 fn test_double_pickup() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"dp");
-    let id = create_default(&s, hash, 500);
+    let id = create_default(&s, 500);
     s.client().confirm_pickup(&id);
 
     let result = s.client().try_confirm_pickup(&id);
@@ -220,26 +189,24 @@ fn test_double_pickup() {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Early refund rejected
+// 7. Early refund rejected
 // ---------------------------------------------------------------------------
 #[test]
 fn test_early_refund() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"early");
-    let id = create_default(&s, hash, 0);
+    let id = create_default(&s, 0);
 
     let result = s.client().try_refund(&id);
     assert_eq!(result, Err(Ok(Error::NotExpired)));
 }
 
 // ---------------------------------------------------------------------------
-// 9. Refund after expiry returns full balance
+// 8. Refund after expiry returns full balance (no pickup yet)
 // ---------------------------------------------------------------------------
 #[test]
 fn test_refund_after_expiry() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"refund");
-    let id = create_default(&s, hash, 0);
+    let id = create_default(&s, 0);
 
     s.advance(101);
     s.client().refund(&id);
@@ -248,13 +215,12 @@ fn test_refund_after_expiry() {
 }
 
 // ---------------------------------------------------------------------------
-// 10. Refund after partial pickup returns remainder only
+// 9. Refund after partial pickup returns remainder only
 // ---------------------------------------------------------------------------
 #[test]
 fn test_refund_after_pickup() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"partial-refund");
-    let id = create_default(&s, hash, 3000); // 30 %
+    let id = create_default(&s, 3000); // 30 %
 
     s.client().confirm_pickup(&id);
     assert_eq!(s.token_balance(&s.courier), 30_000);
@@ -266,13 +232,12 @@ fn test_refund_after_pickup() {
 }
 
 // ---------------------------------------------------------------------------
-// 11. Double-refund rejected
+// 10. Double-refund rejected
 // ---------------------------------------------------------------------------
 #[test]
 fn test_double_refund() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"dr");
-    let id = create_default(&s, hash, 0);
+    let id = create_default(&s, 0);
 
     s.advance(101);
     s.client().refund(&id);
@@ -282,18 +247,15 @@ fn test_double_refund() {
 }
 
 // ---------------------------------------------------------------------------
-// 12. Refund on completed delivery rejected
+// 11. Refund on completed delivery rejected
 // ---------------------------------------------------------------------------
 #[test]
 fn test_refund_on_completed() {
     let s = Setup::new();
-    let secret = b"roc";
-    let hash = make_hash(&s.env, secret);
-    let id = create_default(&s, hash, 0);
+    let id = create_default(&s, 0);
 
     s.client().confirm_pickup(&id);
-    s.client()
-        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client().confirm_receipt(&id);
 
     s.advance(101);
     let result = s.client().try_refund(&id);
@@ -301,37 +263,43 @@ fn test_refund_on_completed() {
 }
 
 // ---------------------------------------------------------------------------
-// 13. Complete before pickup rejected
+// 12. confirm_receipt before pickup rejected
 // ---------------------------------------------------------------------------
 #[test]
-fn test_complete_before_pickup() {
+fn test_receipt_before_pickup() {
     let s = Setup::new();
-    let secret = b"cbp";
-    let hash = make_hash(&s.env, secret);
-    let id = create_default(&s, hash, 0);
+    let id = create_default(&s, 0);
 
-    let result = s
-        .client()
-        .try_complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    let result = s.client().try_confirm_receipt(&id);
     assert_eq!(result, Err(Ok(Error::InvalidState)));
 }
 
 // ---------------------------------------------------------------------------
-// 14. Expired delivery cannot be completed
+// 13. confirm_receipt after expiry rejected
 // ---------------------------------------------------------------------------
 #[test]
-fn test_expired_completion() {
+fn test_receipt_after_expiry() {
     let s = Setup::new();
-    let secret = b"expired";
-    let hash = make_hash(&s.env, secret);
-    let id = create_default(&s, hash, 1000);
+    let id = create_default(&s, 1000);
 
     s.client().confirm_pickup(&id);
     s.advance(101); // past expiry
 
-    let result = s
-        .client()
-        .try_complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    let result = s.client().try_confirm_receipt(&id);
+    assert_eq!(result, Err(Ok(Error::InvalidState)));
+}
+
+// ---------------------------------------------------------------------------
+// 14. confirm_pickup after expiry rejected
+// ---------------------------------------------------------------------------
+#[test]
+fn test_pickup_after_expiry_rejected() {
+    let s = Setup::new();
+    let id = create_default(&s, 1000);
+
+    s.advance(101);
+
+    let result = s.client().try_confirm_pickup(&id);
     assert_eq!(result, Err(Ok(Error::InvalidState)));
 }
 
@@ -341,13 +309,12 @@ fn test_expired_completion() {
 #[test]
 fn test_invalid_pickup_bps() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"inv");
     let result = s.client().try_create_delivery(
         &s.sender,
         &s.courier,
+        &s.recipient,
         &s.token,
         &100_000,
-        &hash,
         &5001,
         &s.expiry(),
     );
@@ -360,11 +327,15 @@ fn test_invalid_pickup_bps() {
 #[test]
 fn test_invalid_expiry() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"exp");
     let current = s.env.ledger().get().sequence_number;
     let result = s.client().try_create_delivery(
-        &s.sender, &s.courier, &s.token, &100_000, &hash, &0,
-        &current, // == current, not > current
+        &s.sender,
+        &s.courier,
+        &s.recipient,
+        &s.token,
+        &100_000,
+        &0,
+        &current,
     );
     assert_eq!(result, Err(Ok(Error::InvalidExpiry)));
 }
@@ -375,10 +346,15 @@ fn test_invalid_expiry() {
 #[test]
 fn test_zero_amount() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"zero");
-    let result =
-        s.client()
-            .try_create_delivery(&s.sender, &s.courier, &s.token, &0, &hash, &0, &s.expiry());
+    let result = s.client().try_create_delivery(
+        &s.sender,
+        &s.courier,
+        &s.recipient,
+        &s.token,
+        &0,
+        &0,
+        &s.expiry(),
+    );
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
@@ -388,13 +364,12 @@ fn test_zero_amount() {
 #[test]
 fn test_negative_amount() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"neg");
     let result = s.client().try_create_delivery(
         &s.sender,
         &s.courier,
+        &s.recipient,
         &s.token,
         &-1,
-        &hash,
         &0,
         &s.expiry(),
     );
@@ -417,9 +392,7 @@ fn test_get_delivery_not_found() {
 #[test]
 fn test_get_delivery_state_transitions() {
     let s = Setup::new();
-    let secret = b"state";
-    let hash = make_hash(&s.env, secret);
-    let id = create_default(&s, hash, 1000);
+    let id = create_default(&s, 1000);
 
     let d = s.client().get_delivery(&id);
     assert_eq!(d.status, Status::Created);
@@ -430,24 +403,23 @@ fn test_get_delivery_state_transitions() {
     assert_eq!(d.status, Status::PickedUp);
     assert_eq!(d.released, 10_000);
 
-    s.client()
-        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client().confirm_receipt(&id);
     let d = s.client().get_delivery(&id);
     assert_eq!(d.status, Status::Completed);
     assert_eq!(d.released, 100_000);
 }
 
 // ---------------------------------------------------------------------------
-// 21. Auth failure: courier role required for confirm_pickup
+// 21. Auth failure: courier auth required for confirm_pickup
 // ---------------------------------------------------------------------------
 #[test]
 fn test_auth_failure_confirm_pickup() {
     let env = Env::default();
-    // Use full mock for setup.
     env.mock_all_auths();
 
     let sender = Address::generate(&env);
     let courier = Address::generate(&env);
+    let recipient = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = env
         .register_stellar_asset_contract_v2(token_admin)
@@ -457,11 +429,11 @@ fn test_auth_failure_confirm_pickup() {
     let contract = env.register(EscrowContract, ());
     let client = EscrowContractClient::new(&env, &contract);
 
-    let hash = make_hash(&env, b"auth-pickup");
     let expiry = env.ledger().get().sequence_number + 100;
-    let id = client.create_delivery(&sender, &courier, &token, &100_000, &hash, &500, &expiry);
+    let id = client.create_delivery(
+        &sender, &courier, &recipient, &token, &100_000, &500, &expiry,
+    );
 
-    // Clear all mocked auths: require_auth() for the courier will now fail.
     env.mock_auths(&[]);
     let result = client.try_confirm_pickup(&id);
     assert!(result.is_err());
@@ -473,9 +445,9 @@ fn test_auth_failure_confirm_pickup() {
 #[test]
 fn test_auth_failure_create() {
     let env = Env::default();
-    // No auths mocked at all.
     let sender = Address::generate(&env);
     let courier = Address::generate(&env);
+    let recipient = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = env
         .register_stellar_asset_contract_v2(token_admin)
@@ -483,15 +455,15 @@ fn test_auth_failure_create() {
     let contract = env.register(EscrowContract, ());
     let client = EscrowContractClient::new(&env, &contract);
 
-    let hash = make_hash(&env, b"auth-create");
     let expiry = env.ledger().get().sequence_number + 100;
-    let result =
-        client.try_create_delivery(&sender, &courier, &token, &100_000, &hash, &500, &expiry);
+    let result = client.try_create_delivery(
+        &sender, &courier, &recipient, &token, &100_000, &500, &expiry,
+    );
     assert!(result.is_err());
 }
 
 // ---------------------------------------------------------------------------
-// 23. Auth failure: sender role required for refund
+// 23. Auth failure: sender auth required for refund
 // ---------------------------------------------------------------------------
 #[test]
 fn test_auth_failure_refund() {
@@ -500,6 +472,7 @@ fn test_auth_failure_refund() {
 
     let sender = Address::generate(&env);
     let courier = Address::generate(&env);
+    let recipient = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = env
         .register_stellar_asset_contract_v2(token_admin)
@@ -508,39 +481,148 @@ fn test_auth_failure_refund() {
     let contract = env.register(EscrowContract, ());
     let client = EscrowContractClient::new(&env, &contract);
 
-    let hash = make_hash(&env, b"auth-refund");
     let expiry = env.ledger().get().sequence_number + 50;
-    let id = client.create_delivery(&sender, &courier, &token, &100_000, &hash, &0, &expiry);
-
+    let id = client.create_delivery(&sender, &courier, &recipient, &token, &100_000, &0, &expiry);
     env.ledger().set(LedgerInfo {
         sequence_number: expiry + 1,
         ..env.ledger().get()
     });
 
-    // Clear all mocked auths: require_auth() for the sender will now fail.
     env.mock_auths(&[]);
     let result = client.try_refund(&id);
     assert!(result.is_err());
 }
 
 // ---------------------------------------------------------------------------
-// 24. Multiple independent deliveries
+// 24. Auth failure: recipient auth required for confirm_receipt
+// ---------------------------------------------------------------------------
+#[test]
+fn test_auth_failure_confirm_receipt() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sender = Address::generate(&env);
+    let courier = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    StellarAssetClient::new(&env, &token).mint(&sender, &1_000_000);
+    let contract = env.register(EscrowContract, ());
+    let client = EscrowContractClient::new(&env, &contract);
+
+    let expiry = env.ledger().get().sequence_number + 100;
+    let id = client.create_delivery(
+        &sender, &courier, &recipient, &token, &100_000, &500, &expiry,
+    );
+    client.confirm_pickup(&id);
+
+    // Clear all auths – recipient's auth is now absent.
+    env.mock_auths(&[]);
+    let result = client.try_confirm_receipt(&id);
+    assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// 25. Auth failure: sender cannot call confirm_receipt (wrong role)
+// ---------------------------------------------------------------------------
+#[test]
+fn test_sender_cannot_confirm_receipt() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sender = Address::generate(&env);
+    let courier = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    StellarAssetClient::new(&env, &token).mint(&sender, &1_000_000);
+    let contract = env.register(EscrowContract, ());
+    let client = EscrowContractClient::new(&env, &contract);
+
+    let expiry = env.ledger().get().sequence_number + 100;
+    let id = client.create_delivery(
+        &sender, &courier, &recipient, &token, &100_000, &500, &expiry,
+    );
+    client.confirm_pickup(&id);
+
+    // Only sender's auth is present; contract requires recipient's auth.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &sender,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract,
+            fn_name: "confirm_receipt",
+            args: soroban_sdk::vec![&env],
+            sub_invokes: &[],
+        },
+    }]);
+    let result = client.try_confirm_receipt(&id);
+    assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// 26. Exploit sequence rejected: courier cannot confirm_pickup then
+//     immediately call confirm_receipt to steal the escrow
+// ---------------------------------------------------------------------------
+#[test]
+fn test_exploit_courier_cannot_self_complete() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sender = Address::generate(&env);
+    let courier = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    StellarAssetClient::new(&env, &token).mint(&sender, &1_000_000);
+    let contract = env.register(EscrowContract, ());
+    let client = EscrowContractClient::new(&env, &contract);
+
+    let expiry = env.ledger().get().sequence_number + 100;
+    let id = client.create_delivery(
+        &sender, &courier, &recipient, &token, &100_000, &2000, &expiry,
+    );
+
+    // Courier picks up (gets 20 000).
+    client.confirm_pickup(&id);
+    assert_eq!(TokenClient::new(&env, &token).balance(&courier), 20_000);
+
+    // Courier attempts to trigger confirm_receipt using only their own auth.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &courier,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract,
+            fn_name: "confirm_receipt",
+            args: soroban_sdk::vec![&env],
+            sub_invokes: &[],
+        },
+    }]);
+    let result = client.try_confirm_receipt(&id);
+
+    // Must be rejected – courier cannot release their own remainder.
+    assert!(result.is_err());
+
+    // Courier balance stays at 20 000 – remainder not released.
+    assert_eq!(TokenClient::new(&env, &token).balance(&courier), 20_000);
+}
+
+// ---------------------------------------------------------------------------
+// 27. Multiple independent deliveries
 // ---------------------------------------------------------------------------
 #[test]
 fn test_multiple_deliveries() {
     let s = Setup::new();
-    let secret_a = b"secret-a";
-    let secret_b = b"secret-b";
-    let hash_a = make_hash(&s.env, secret_a);
-    let hash_b = make_hash(&s.env, secret_b);
-
-    let id_a = create_default(&s, hash_a, 1000);
-    let id_b = create_default(&s, hash_b, 2000);
+    let id_a = create_default(&s, 1000);
+    let id_b = create_default(&s, 2000);
 
     // Complete A.
     s.client().confirm_pickup(&id_a);
-    s.client()
-        .complete_delivery(&id_a, &Bytes::from_slice(&s.env, secret_a));
+    s.client().confirm_receipt(&id_a);
 
     // B is still Created.
     let d_b = s.client().get_delivery(&id_b);
@@ -548,21 +630,18 @@ fn test_multiple_deliveries() {
 
     // Complete B.
     s.client().confirm_pickup(&id_b);
-    s.client()
-        .complete_delivery(&id_b, &Bytes::from_slice(&s.env, secret_b));
+    s.client().confirm_receipt(&id_b);
 
     assert_eq!(s.token_balance(&s.courier), 200_000);
 }
 
 // ---------------------------------------------------------------------------
-// 25. Token balances throughout lifecycle
+// 28. Token balances throughout lifecycle
 // ---------------------------------------------------------------------------
 #[test]
 fn test_token_balances_throughout() {
     let s = Setup::new();
-    let secret = b"balance-check";
-    let hash = make_hash(&s.env, secret);
-    let id = create_default(&s, hash, 1500); // 15 %
+    let id = create_default(&s, 1500); // 15 %
 
     assert_eq!(s.token_balance(&s.sender), 900_000);
     assert_eq!(s.token_balance(&s.contract), 100_000);
@@ -571,38 +650,26 @@ fn test_token_balances_throughout() {
     assert_eq!(s.token_balance(&s.courier), 15_000);
     assert_eq!(s.token_balance(&s.contract), 85_000);
 
-    s.client()
-        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client().confirm_receipt(&id);
     assert_eq!(s.token_balance(&s.courier), 100_000);
     assert_eq!(s.token_balance(&s.contract), 0);
 }
 
 // ---------------------------------------------------------------------------
-// 26. Empty secret that matches its own hash
-// ---------------------------------------------------------------------------
-#[test]
-fn test_complete_with_empty_secret() {
-    let s = Setup::new();
-    let empty: &[u8] = b"";
-    let hash = make_hash(&s.env, empty);
-    let id = create_default(&s, hash, 0);
-
-    s.client().confirm_pickup(&id);
-    s.client()
-        .complete_delivery(&id, &Bytes::from_slice(&s.env, empty));
-    assert_eq!(s.token_balance(&s.courier), 100_000);
-}
-
-// ---------------------------------------------------------------------------
-// 27. Refund at exactly expiry+1 succeeds
+// 29. Refund at exactly expiry+1 succeeds
 // ---------------------------------------------------------------------------
 #[test]
 fn test_refund_exactly_at_expiry_plus_one() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"exact");
     let expiry = s.env.ledger().get().sequence_number + 50;
     let id = s.client().create_delivery(
-        &s.sender, &s.courier, &s.token, &100_000, &hash, &0, &expiry,
+        &s.sender,
+        &s.courier,
+        &s.recipient,
+        &s.token,
+        &100_000,
+        &0,
+        &expiry,
     );
 
     s.env.ledger().set(LedgerInfo {
@@ -615,36 +682,13 @@ fn test_refund_exactly_at_expiry_plus_one() {
 }
 
 // ---------------------------------------------------------------------------
-// 28. confirm_pickup after expiry is rejected (item 2)
+// 30-33. Events emitted on every state change
 // ---------------------------------------------------------------------------
-#[test]
-fn test_pickup_after_expiry_rejected() {
-    let s = Setup::new();
-    let hash = make_hash(&s.env, b"expired-pickup");
-    let id = create_default(&s, hash, 1000);
-
-    // Advance past expiry.
-    s.advance(101);
-
-    let result = s.client().try_confirm_pickup(&id);
-    assert_eq!(result, Err(Ok(Error::InvalidState)));
-}
-
-// ---------------------------------------------------------------------------
-// 29-32. Events emitted on every state change (item 3)
-// ---------------------------------------------------------------------------
-
-/// Helper: return count of events published so far in this env.
-fn event_count(env: &Env) -> usize {
-    env.events().all().events().len()
-}
 
 #[test]
 fn test_event_created() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"ev-create");
-    let id = create_default(&s, hash, 1000);
-    // create_delivery emits DeliveryCreated → at least one event from last call.
+    let id = create_default(&s, 1000);
     assert!(
         event_count(&s.env) > 0,
         "expected event after create_delivery"
@@ -655,10 +699,8 @@ fn test_event_created() {
 #[test]
 fn test_event_pickedup() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"ev-pickup");
-    let id = create_default(&s, hash, 1000);
+    let id = create_default(&s, 1000);
     s.client().confirm_pickup(&id);
-    // confirm_pickup emits PickupConfirmed.
     assert!(
         event_count(&s.env) > 0,
         "expected event after confirm_pickup"
@@ -666,28 +708,22 @@ fn test_event_pickedup() {
 }
 
 #[test]
-fn test_event_completed() {
+fn test_event_receipt() {
     let s = Setup::new();
-    let secret = b"ev-complete";
-    let hash = make_hash(&s.env, secret);
-    let id = create_default(&s, hash, 0);
+    let id = create_default(&s, 0);
     s.client().confirm_pickup(&id);
-    s.client()
-        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
-    // complete_delivery emits DeliveryCompleted.
+    s.client().confirm_receipt(&id);
     assert!(
         event_count(&s.env) > 0,
-        "expected event after complete_delivery"
+        "expected event after confirm_receipt"
     );
 }
 
 #[test]
 fn test_event_refunded() {
     let s = Setup::new();
-    let hash = make_hash(&s.env, b"ev-refund");
-    let id = create_default(&s, hash, 0);
+    let id = create_default(&s, 0);
     s.advance(101);
     s.client().refund(&id);
-    // refund emits DeliveryRefunded.
     assert!(event_count(&s.env) > 0, "expected event after refund");
 }

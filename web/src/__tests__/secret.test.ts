@@ -1,65 +1,45 @@
 /**
- * Tests for the secret helpers in src/lib/secret.ts
+ * Tests for the share-link helpers in src/lib/secret.ts
  *
  * Covers:
- *  - generateSecret returns a non-empty URL-safe base64 string
- *  - Two calls return different values (no reuse)
- *  - buildCourierLookupUrl puts the id in the query and NEVER the secret
+ *  - buildShareUrl puts the id in the query string
+ *  - buildShareUrl does not put a secret in the URL (there is none)
  *  - parseDeliveryIdFromQuery round-trips the id
  *  - parseDeliveryIdFromQuery returns null for missing/bad input
  */
 import { describe, it, expect } from "vitest";
-import {
-  generateSecret,
-  buildCourierLookupUrl,
-  parseDeliveryIdFromQuery,
-} from "../lib/secret";
+import { buildShareUrl, parseDeliveryIdFromQuery } from "../lib/secret";
 
-describe("generateSecret", () => {
-  it("returns a non-empty string", () => {
-    expect(generateSecret().length).toBeGreaterThan(0);
-  });
-
-  it("uses only URL-safe base64 characters (no +, /, or =)", () => {
-    const secret = generateSecret();
-    expect(secret).not.toMatch(/[+/=]/);
-  });
-
-  it("returns different values on successive calls", () => {
-    expect(generateSecret()).not.toBe(generateSecret());
-  });
-});
-
-describe("buildCourierLookupUrl", () => {
+describe("buildShareUrl", () => {
   it("includes the delivery id in the query string", () => {
-    const url = buildCourierLookupUrl("https://example.com/receive", 42n);
+    const url = buildShareUrl("https://example.com/recipient", 42n);
     expect(url).toContain("id=42");
   });
 
-  it("does NOT include a secret parameter", () => {
-    const secret = generateSecret();
-    const url = buildCourierLookupUrl("https://example.com/receive", 7n);
-    // Verify the url does not contain the secret value and has no 'secret' key.
-    expect(url).not.toContain("secret");
-    expect(url).not.toContain(secret);
-  });
-
   it("uses a query string, not a fragment", () => {
-    const url = buildCourierLookupUrl("https://example.com/receive", 1n);
+    const url = buildShareUrl("https://example.com/recipient", 1n);
     expect(url).toContain("?");
     expect(url).not.toContain("#");
+  });
+
+  it("does not contain a 'secret' parameter", () => {
+    const url = buildShareUrl("https://example.com/recipient", 7n);
+    expect(url).not.toContain("secret");
+  });
+
+  it("works for the courier lookup URL too", () => {
+    const url = buildShareUrl("https://example.com/receive", 99n);
+    expect(url).toContain("id=99");
   });
 });
 
 describe("parseDeliveryIdFromQuery", () => {
   it("parses a valid id from a query string", () => {
-    const result = parseDeliveryIdFromQuery("?id=99");
-    expect(result).toBe(99n);
+    expect(parseDeliveryIdFromQuery("?id=99")).toBe(99n);
   });
 
   it("parses without the leading ?", () => {
-    const result = parseDeliveryIdFromQuery("id=7");
-    expect(result).toBe(7n);
+    expect(parseDeliveryIdFromQuery("id=7")).toBe(7n);
   });
 
   it("returns null when id is missing", () => {
@@ -67,8 +47,8 @@ describe("parseDeliveryIdFromQuery", () => {
     expect(parseDeliveryIdFromQuery("")).toBeNull();
   });
 
-  it("round-trips a value from buildCourierLookupUrl", () => {
-    const url = buildCourierLookupUrl("https://example.com/receive", 123n);
+  it("round-trips a value from buildShareUrl", () => {
+    const url = buildShareUrl("https://example.com/recipient", 123n);
     const search = new URL(url).search;
     expect(parseDeliveryIdFromQuery(search)).toBe(123n);
   });

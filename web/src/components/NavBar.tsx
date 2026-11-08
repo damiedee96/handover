@@ -10,7 +10,8 @@ export function NavBar() {
       <span className="navbar__network">Testnet</span>
       <div className="navbar__links">
         <Link to="/send">Send</Link>
-        <Link to="/receive">Receive</Link>
+        <Link to="/receive">Courier</Link>
+        <Link to="/recipient">Recipient</Link>
         <Link to="/status">Status</Link>
       </div>
       <WalletButton />

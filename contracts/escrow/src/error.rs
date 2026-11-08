@@ -14,8 +14,6 @@ pub enum Error {
     Unauthorised = 4,
     /// Delivery is in a state that does not allow this operation.
     InvalidState = 5,
-    /// Wrong secret – SHA-256 does not match hash.
-    WrongSecret = 6,
     /// Expiry ledger has not passed yet (too early to refund).
     NotExpired = 7,
     /// Amount must be positive.

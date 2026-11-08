@@ -1,32 +1,38 @@
 /**
  * Sender page – create a new delivery.
  *
- * Secret-flow model:
- *  - A random secret is generated here, client-side.
- *  - Only its SHA-256 hash is sent on-chain; the plaintext stays in the browser.
- *  - The sender shows the QR code / share link to the RECIPIENT (the person
- *    receiving the parcel). The recipient keeps the secret and presents it to
- *    the courier at the moment of physical handoff.
- *  - The courier NEVER sees the share URL; they type the secret manually.
+ * The sender specifies the courier and the recipient.  No secret is generated
+ * here.  Completion is authorised by the recipient's wallet signature, not by
+ * a bearer secret.
+ *
+ * After creation the sender receives:
+ *   • A QR code / link for the recipient → /recipient?id=<n>
+ *   • A lookup link for the courier      → /receive?id=<n>
  */
 import { useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useWallet } from "../lib/walletContext";
-import { createDelivery, currentLedger, sha256Bytes } from "../lib/escrow";
-import { generateSecret, buildCourierLookupUrl } from "../lib/secret";
+import { createDelivery, currentLedger } from "../lib/escrow";
+import { buildShareUrl } from "../lib/secret";
 import { ENV } from "../lib/env";
 
 type PageState =
   | { phase: "form" }
   | { phase: "submitting" }
-  | { phase: "done"; deliveryId: bigint; secret: string; courierUrl: string }
+  | {
+      phase: "done";
+      deliveryId: bigint;
+      recipientUrl: string;
+      courierUrl: string;
+    }
   | { phase: "error"; message: string };
 
-const LEDGERS_PER_DAY = 17_280; // ~5 s/ledger
+const LEDGERS_PER_DAY = 17_280;
 
 export function SenderPage() {
   const { walletState } = useWallet();
   const [courier, setCourier] = useState("");
+  const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
   const [pickupPct, setPickupPct] = useState("20");
   const [expiryDays, setExpiryDays] = useState("7");
@@ -52,32 +58,25 @@ export function SenderPage() {
 
     setState({ phase: "submitting" });
     try {
-      const secret = generateSecret();
-      const secretHash = sha256Bytes(secret);
-
       const ledger = await currentLedger();
       const expiryLedger =
         ledger + Math.round(parseFloat(expiryDays) * LEDGERS_PER_DAY);
-
-      // Token amounts: stroops (7 decimal places, consistent with XLM denomination).
       const amountStroops = BigInt(Math.round(amountNum * 1e7));
 
       const deliveryId = await createDelivery({
         sender: connected,
         courier,
+        recipient,
         amount: amountStroops,
-        secretHash,
         pickupBps,
         expiryLedger,
       });
 
-      // The courier lookup URL contains only the delivery id — NOT the secret.
-      const courierUrl = buildCourierLookupUrl(
-        `${window.location.origin}/receive`,
-        deliveryId,
-      );
+      const origin = window.location.origin;
+      const recipientUrl = buildShareUrl(`${origin}/recipient`, deliveryId);
+      const courierUrl = buildShareUrl(`${origin}/receive`, deliveryId);
 
-      setState({ phase: "done", deliveryId, secret, courierUrl });
+      setState({ phase: "done", deliveryId, recipientUrl, courierUrl });
     } catch (err) {
       setState({
         phase: "error",
@@ -95,47 +94,45 @@ export function SenderPage() {
           Testnet.
         </p>
 
-        {/* Section 1: Recipient secret */}
-        <section className="secret-section" aria-label="Recipient secret code">
-          <h2>Give this secret to the RECIPIENT</h2>
+        {/* Recipient link – they use wallet auth to confirm receipt */}
+        <section className="secret-section" aria-label="Recipient link">
+          <h2>Send to the recipient</h2>
           <p className="hint">
-            The recipient (the person <em>receiving</em> the parcel) needs this
-            secret code. They keep it private and reveal it to the courier only
-            at the moment of physical handoff. <strong>Never send this to
-            the courier directly.</strong>
+            The recipient opens this link, connects their Freighter wallet, and
+            confirms receipt after the parcel arrives. Their wallet signature
+            releases the remainder to the courier.
           </p>
-
           <div className="qr-wrapper">
             <QRCodeSVG
-              value={state.secret}
+              value={state.recipientUrl}
               size={220}
-              aria-label="QR code containing the delivery secret"
+              aria-label="QR code for the recipient confirm-receipt page"
             />
           </div>
-
           <div className="share-link-row">
             <input
               readOnly
-              value={state.secret}
-              aria-label="Secret code"
+              value={state.recipientUrl}
+              aria-label="Recipient link"
               className="share-link-input"
               onFocus={(e) => e.currentTarget.select()}
             />
             <button
               type="button"
-              onClick={() => navigator.clipboard.writeText(state.secret)}
+              onClick={() =>
+                navigator.clipboard.writeText(state.recipientUrl)
+              }
             >
               Copy
             </button>
           </div>
         </section>
 
-        {/* Section 2: Courier lookup URL (no secret) */}
+        {/* Courier lookup link */}
         <section className="secret-section" aria-label="Courier lookup link">
           <h2>Send this link to the courier</h2>
           <p className="hint">
-            This link lets the courier look up the delivery. It does{" "}
-            <strong>not</strong> contain the secret.
+            The courier uses this to confirm pickup.
           </p>
           <div className="share-link-row">
             <input
@@ -198,6 +195,23 @@ export function SenderPage() {
           The Stellar address of the courier who will pick up the delivery.
         </span>
 
+        <label htmlFor="recipient">Recipient address (G…)</label>
+        <input
+          id="recipient"
+          type="text"
+          required
+          placeholder="GXYZ…"
+          value={recipient}
+          onChange={(e) => setRecipient(e.target.value)}
+          pattern="G[A-Z2-7]{55}"
+          title="Stellar public key starting with G"
+          aria-describedby="recipient-hint"
+        />
+        <span id="recipient-hint" className="field-hint">
+          The Stellar address of the person receiving the parcel. They will
+          confirm receipt with their wallet.
+        </span>
+
         <label htmlFor="token-display">Token (Testnet)</label>
         <input
           id="token-display"
@@ -233,7 +247,7 @@ export function SenderPage() {
           aria-describedby="pickup-hint"
         />
         <span id="pickup-hint" className="field-hint">
-          0–50% paid to the courier on pickup; the rest on delivery completion.
+          0–50% paid to the courier on pickup; the rest on confirmed receipt.
         </span>
 
         <label htmlFor="expiry-days">Expiry (days)</label>

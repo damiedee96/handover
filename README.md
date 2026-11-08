@@ -27,7 +27,7 @@ Five public functions — see [`docs/AUTHORIZATION.md`](docs/AUTHORIZATION.md) f
 |---|---|---|
 | `create_delivery` | Sender | Lock tokens; returns delivery id |
 | `confirm_pickup` | Courier | Release pickup fraction (rejected after expiry) |
-| `complete_delivery` | Courier | Verify secret; release remainder |
+| `confirm_receipt` | Recipient | Release remainder to courier (wallet auth required) |
 | `refund` | Sender | Reclaim funds after expiry |
 | `get_delivery` | Anyone | Read delivery record |
 
@@ -47,7 +47,7 @@ stellar contract build
 cargo fmt --check
 cargo clippy -- -D warnings
 cargo test
-# Expected: 32 tests pass, 0 fail
+# Expected: 33 tests pass, 0 fail
 ```
 
 ---
@@ -132,12 +132,11 @@ and switch it to Testnet before connecting.
 
 ## Web app
 
-**Sender page** — create a delivery and receive two outputs:
-1. A secret code (QR + text) to give to the **recipient** — never the courier.
-2. A lookup link (delivery id only) to give to the courier.
+**Sender page** — create a delivery (courier + recipient addresses, amount, pickup %, expiry). Receive a link for the recipient and a lookup link for the courier.
 
-**Courier page** — look up a delivery by id; confirm pickup; type the secret
-code shown by the recipient at handoff to complete delivery.
+**Courier page** — look up a delivery by id; confirm pickup.
+
+**Recipient page** — connect wallet; confirm receipt after the parcel arrives. Wallet signature releases remainder to the courier.
 
 **Status page** — look up any delivery; refund unreleased funds after expiry.
 
@@ -148,7 +147,7 @@ The app never handles secret keys. All signing is done inside Freighter.
 ```sh
 cd web
 npm run typecheck   # 0 errors expected
-npm run test        # 13 tests pass
+npm run test        # 11 tests pass
 npm run build       # outputs dist/
 ```
 
@@ -158,6 +157,7 @@ npm run build       # outputs dist/
 
 | File | Contents |
 |---|---|
+| [`docs/SECURITY_NOTES.md`](docs/SECURITY_NOTES.md) | CVE-2026-001 vulnerability and fix |
 | [`docs/AUTHORIZATION.md`](docs/AUTHORIZATION.md) | Who can call each function |
 | [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) | Known limitations and trust assumptions |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Pinned versions and rationale |
