@@ -1,9 +1,9 @@
-use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Bytes, Env};
+use soroban_sdk::{contract, contractimpl, token, Address, Bytes, BytesN, Env};
 
 use crate::{
     error::Error,
     storage,
-    types::{Delivery, Status},
+    types::{emit_completed, emit_created, emit_pickup, emit_refunded, Delivery, Status},
 };
 
 /// Compute SHA-256 of `data` and return 32-byte result.
@@ -24,6 +24,7 @@ impl EscrowContract {
     /// Create a new delivery and lock `amount` tokens in the contract.
     ///
     /// Returns the numeric delivery id.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_delivery(
         env: Env,
         sender: Address,
@@ -34,7 +35,6 @@ impl EscrowContract {
         pickup_bps: u32,
         expiry_ledger: u32,
     ) -> Result<u64, Error> {
-        // Validate inputs.
         if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
@@ -45,16 +45,20 @@ impl EscrowContract {
             return Err(Error::InvalidExpiry);
         }
 
-        // Sender must authorise the call (and therefore the transfer).
         sender.require_auth();
 
-        // Pull funds from sender into the contract.
-        transfer(&env, &token, &sender, &env.current_contract_address(), amount);
+        transfer(
+            &env,
+            &token,
+            &sender,
+            &env.current_contract_address(),
+            amount,
+        );
 
         let id = storage::next_id(&env);
         let delivery = Delivery {
-            sender,
-            courier,
+            sender: sender.clone(),
+            courier: courier.clone(),
             token,
             amount,
             secret_hash,
@@ -65,12 +69,14 @@ impl EscrowContract {
         };
         storage::save_delivery(&env, id, &delivery);
 
+        emit_created(&env, id, sender, courier, amount);
         Ok(id)
     }
 
     /// Called by the courier once they physically collect the parcel.
     ///
     /// Releases `pickup_bps / 10_000 * amount` tokens to the courier immediately.
+    /// Rejected if the delivery is already expired.
     pub fn confirm_pickup(env: Env, id: u64) -> Result<(), Error> {
         let mut delivery = storage::load_delivery(&env, id).ok_or(Error::NotFound)?;
 
@@ -80,7 +86,11 @@ impl EscrowContract {
             return Err(Error::InvalidState);
         }
 
-        // Compute pickup payout with integer arithmetic (floor).
+        // Reject pickup after the delivery window has closed.
+        if env.ledger().sequence() > delivery.expiry_ledger {
+            return Err(Error::InvalidState);
+        }
+
         let pickup_amount = (delivery.amount as u128)
             .checked_mul(delivery.pickup_bps as u128)
             .unwrap_or(0)
@@ -101,6 +111,7 @@ impl EscrowContract {
         delivery.status = Status::PickedUp;
         storage::save_delivery(&env, id, &delivery);
 
+        emit_pickup(&env, id, pickup_amount);
         Ok(())
     }
 
@@ -116,12 +127,10 @@ impl EscrowContract {
             return Err(Error::InvalidState);
         }
 
-        // Reject expired deliveries.
         if env.ledger().sequence() > delivery.expiry_ledger {
             return Err(Error::InvalidState);
         }
 
-        // Verify secret.
         let hash: BytesN<32> = sha256(&env, &secret);
         if hash != delivery.secret_hash {
             return Err(Error::WrongSecret);
@@ -142,6 +151,7 @@ impl EscrowContract {
         delivery.status = Status::Completed;
         storage::save_delivery(&env, id, &delivery);
 
+        emit_completed(&env, id, delivery.released);
         Ok(())
     }
 
@@ -151,12 +161,10 @@ impl EscrowContract {
 
         delivery.sender.require_auth();
 
-        // Refund is only valid after expiry.
         if env.ledger().sequence() <= delivery.expiry_ledger {
             return Err(Error::NotExpired);
         }
 
-        // Can only refund from Created or PickedUp states.
         if delivery.status == Status::Completed || delivery.status == Status::Refunded {
             return Err(Error::InvalidState);
         }
@@ -175,6 +183,7 @@ impl EscrowContract {
         delivery.status = Status::Refunded;
         storage::save_delivery(&env, id, &delivery);
 
+        emit_refunded(&env, id, unreleased);
         Ok(())
     }
 

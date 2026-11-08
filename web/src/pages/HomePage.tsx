@@ -1,13 +1,11 @@
 import { Link } from "react-router-dom";
-import { ENV } from "../lib/env";
 
 export function HomePage() {
   return (
     <main className="page home">
       <h1>Handover</h1>
       <p className="tagline">
-        On-chain escrow for in-person deliveries on Stellar{" "}
-        <span className="network-label">{ENV.network}</span>.
+        On-chain escrow for in-person deliveries on Stellar Testnet.
       </p>
 
       <ul className="home-cards" aria-label="Available actions">

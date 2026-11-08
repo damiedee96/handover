@@ -1,6 +1,8 @@
 /**
  * Typed, validated access to environment variables.
- * All values come from Vite's import.meta.env and are set at build time.
+ *
+ * This app only supports Stellar Testnet.  If a non-TESTNET value is set the
+ * app throws at startup rather than silently operating on Mainnet.
  */
 
 function required(key: string): string {
@@ -13,17 +15,20 @@ function required(key: string): string {
   return val;
 }
 
-export type StellarNetwork = "TESTNET" | "MAINNET";
+// Enforce TESTNET-only at module load time.
+const rawNetwork = (import.meta.env["VITE_STELLAR_NETWORK"] as string | undefined) ?? "TESTNET";
+if (rawNetwork !== "TESTNET") {
+  throw new Error(
+    `This app only supports TESTNET. Set VITE_STELLAR_NETWORK=TESTNET (got "${rawNetwork}").`,
+  );
+}
 
 export const ENV = {
-  network: (import.meta.env["VITE_STELLAR_NETWORK"] ?? "TESTNET") as StellarNetwork,
-  rpcUrl: (import.meta.env["VITE_RPC_URL"] ??
-    "https://soroban-testnet.stellar.org") as string,
+  network: "TESTNET" as const,
+  rpcUrl: (import.meta.env["VITE_RPC_URL"] as string | undefined) ??
+    "https://soroban-testnet.stellar.org",
   escrowContractId: (): string => required("VITE_ESCROW_CONTRACT_ID"),
   tokenContractId: (): string => required("VITE_TOKEN_CONTRACT_ID"),
 } as const;
 
-export const NETWORK_PASSPHRASE: Record<StellarNetwork, string> = {
-  TESTNET: "Test SDF Network ; September 2015",
-  MAINNET: "Public Global Stellar Network ; September 2015",
-};
+export const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";

@@ -28,11 +28,9 @@ pub fn next_id(env: &Env) -> u64 {
 pub fn save_delivery(env: &Env, id: u64, delivery: &Delivery) {
     let key = DataKey::Delivery(id);
     env.storage().persistent().set(&key, delivery);
-    env.storage().persistent().extend_ttl(
-        &key,
-        DELIVERY_LIFETIME_THRESHOLD,
-        DELIVERY_BUMP_AMOUNT,
-    );
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, DELIVERY_LIFETIME_THRESHOLD, DELIVERY_BUMP_AMOUNT);
 }
 
 pub fn load_delivery(env: &Env, id: u64) -> Option<Delivery> {

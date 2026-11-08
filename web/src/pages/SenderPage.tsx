@@ -1,28 +1,25 @@
 /**
  * Sender page – create a new delivery.
  *
- * 1. The sender fills in courier address, amount, pickup %, and how many
- *    ledgers until expiry.
- * 2. A random secret is generated client-side; only its SHA-256 hash is sent
- *    on-chain.
- * 3. After the delivery is created the secret is shown as a QR code and a
- *    shareable link. The secret never leaves the browser.
+ * Secret-flow model:
+ *  - A random secret is generated here, client-side.
+ *  - Only its SHA-256 hash is sent on-chain; the plaintext stays in the browser.
+ *  - The sender shows the QR code / share link to the RECIPIENT (the person
+ *    receiving the parcel). The recipient keeps the secret and presents it to
+ *    the courier at the moment of physical handoff.
+ *  - The courier NEVER sees the share URL; they type the secret manually.
  */
 import { useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useWallet } from "../lib/walletContext";
-import {
-  createDelivery,
-  currentLedger,
-  sha256Bytes,
-} from "../lib/escrow";
-import { generateSecret, buildShareUrl } from "../lib/secret";
+import { createDelivery, currentLedger, sha256Bytes } from "../lib/escrow";
+import { generateSecret, buildCourierLookupUrl } from "../lib/secret";
 import { ENV } from "../lib/env";
 
 type PageState =
   | { phase: "form" }
   | { phase: "submitting" }
-  | { phase: "done"; deliveryId: bigint; secret: string; shareUrl: string }
+  | { phase: "done"; deliveryId: bigint; secret: string; courierUrl: string }
   | { phase: "error"; message: string };
 
 const LEDGERS_PER_DAY = 17_280; // ~5 s/ledger
@@ -62,7 +59,7 @@ export function SenderPage() {
       const expiryLedger =
         ledger + Math.round(parseFloat(expiryDays) * LEDGERS_PER_DAY);
 
-      // Token amounts: use stroops (7 decimals) for XLM-like tokens.
+      // Token amounts: stroops (7 decimal places, consistent with XLM denomination).
       const amountStroops = BigInt(Math.round(amountNum * 1e7));
 
       const deliveryId = await createDelivery({
@@ -74,13 +71,13 @@ export function SenderPage() {
         expiryLedger,
       });
 
-      const shareUrl = buildShareUrl(
+      // The courier lookup URL contains only the delivery id — NOT the secret.
+      const courierUrl = buildCourierLookupUrl(
         `${window.location.origin}/receive`,
         deliveryId,
-        secret,
       );
 
-      setState({ phase: "done", deliveryId, secret, shareUrl });
+      setState({ phase: "done", deliveryId, secret, courierUrl });
     } catch (err) {
       setState({
         phase: "error",
@@ -92,37 +89,65 @@ export function SenderPage() {
   if (state.phase === "done") {
     return (
       <main className="page">
-        <h1>Delivery created</h1>
+        <h1>Delivery created ✓</h1>
         <p>
-          Delivery <strong>#{state.deliveryId.toString()}</strong> is funded.
+          Delivery <strong>#{state.deliveryId.toString()}</strong> is funded on
+          Testnet.
         </p>
 
-        <section className="secret-section" aria-label="Delivery secret">
-          <h2>Share with your courier</h2>
+        {/* Section 1: Recipient secret */}
+        <section className="secret-section" aria-label="Recipient secret code">
+          <h2>Give this secret to the RECIPIENT</h2>
           <p className="hint">
-            Scan the QR code or copy the link. The courier will need this to
-            complete the delivery.
+            The recipient (the person <em>receiving</em> the parcel) needs this
+            secret code. They keep it private and reveal it to the courier only
+            at the moment of physical handoff. <strong>Never send this to
+            the courier directly.</strong>
           </p>
 
           <div className="qr-wrapper">
             <QRCodeSVG
-              value={state.shareUrl}
+              value={state.secret}
               size={220}
-              aria-label="QR code for the delivery share link"
+              aria-label="QR code containing the delivery secret"
             />
           </div>
 
           <div className="share-link-row">
             <input
               readOnly
-              value={state.shareUrl}
-              aria-label="Share link"
+              value={state.secret}
+              aria-label="Secret code"
               className="share-link-input"
               onFocus={(e) => e.currentTarget.select()}
             />
             <button
               type="button"
-              onClick={() => navigator.clipboard.writeText(state.shareUrl)}
+              onClick={() => navigator.clipboard.writeText(state.secret)}
+            >
+              Copy
+            </button>
+          </div>
+        </section>
+
+        {/* Section 2: Courier lookup URL (no secret) */}
+        <section className="secret-section" aria-label="Courier lookup link">
+          <h2>Send this link to the courier</h2>
+          <p className="hint">
+            This link lets the courier look up the delivery. It does{" "}
+            <strong>not</strong> contain the secret.
+          </p>
+          <div className="share-link-row">
+            <input
+              readOnly
+              value={state.courierUrl}
+              aria-label="Courier lookup link"
+              className="share-link-input"
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <button
+              type="button"
+              onClick={() => navigator.clipboard.writeText(state.courierUrl)}
             >
               Copy
             </button>
@@ -170,15 +195,15 @@ export function SenderPage() {
           aria-describedby="courier-hint"
         />
         <span id="courier-hint" className="field-hint">
-          The Stellar address of the person picking up the delivery.
+          The Stellar address of the courier who will pick up the delivery.
         </span>
 
-        <label htmlFor="token-display">Token</label>
+        <label htmlFor="token-display">Token (Testnet)</label>
         <input
           id="token-display"
           type="text"
           readOnly
-          value={`${ENV.tokenContractId()} (${ENV.network})`}
+          value={ENV.tokenContractId()}
           aria-label="Token contract address (read-only, set by env)"
         />
 
@@ -208,7 +233,7 @@ export function SenderPage() {
           aria-describedby="pickup-hint"
         />
         <span id="pickup-hint" className="field-hint">
-          0–50% paid to the courier on pickup; the rest on delivery.
+          0–50% paid to the courier on pickup; the rest on delivery completion.
         </span>
 
         <label htmlFor="expiry-days">Expiry (days)</label>

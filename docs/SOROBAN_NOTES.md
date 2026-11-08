@@ -60,6 +60,15 @@ rpc.Api.GetTransactionStatus.SUCCESS;
 
 Source: `node_modules/@stellar/stellar-sdk/lib/index.d.ts`
 
+### Protocol alignment
+
+`stellar-sdk@13.2.0` targets the same XDR as `stellar-xdr@28.0.0` (Protocol 22),
+which is the Testnet protocol level at time of writing. The contract uses
+`soroban-sdk@29.0.1` which is compatible with Protocol 22.
+
+Verified by checking the `stellar-xdr` version in the Cargo lock and the `@stellar/stellar-sdk`
+changelog at https://github.com/stellar/js-stellar-sdk.
+
 ---
 
 ## Freighter wallet API (v6)

@@ -1,11 +1,17 @@
-# Rust
+# Rust build artefacts
 target/
 Cargo.lock
+
+# Soroban test snapshots (machine-generated, not part of source truth)
+contracts/escrow/test_snapshots/
 
 # Node
 web/node_modules/
 web/dist/
 web/.env
+
+# Kiro IDE workspace config
+.kiro/
 
 # Misc
 .DS_Store

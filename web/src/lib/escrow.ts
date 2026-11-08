@@ -18,7 +18,7 @@ import {
   Address,
   hash,
 } from "@stellar/stellar-sdk";
-import { ENV, NETWORK_PASSPHRASE, type StellarNetwork } from "./env";
+import { ENV, NETWORK_PASSPHRASE } from "./env";
 import { signTx } from "./wallet";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -45,8 +45,7 @@ export interface Delivery {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function networkPassphrase(): string {
-  const map: Record<StellarNetwork, string> = NETWORK_PASSPHRASE;
-  return map[ENV.network];
+  return NETWORK_PASSPHRASE;
 }
 
 function rpcServer(): rpc.Server {
@@ -233,9 +232,3 @@ export async function currentLedger(): Promise<number> {
   const info = await server.getLatestLedger();
   return info.sequence;
 }
-
-/** Human-readable network labels for display. */
-export const NETWORKS: Record<StellarNetwork, string> = {
-  TESTNET: "Testnet",
-  MAINNET: "Mainnet",
-};

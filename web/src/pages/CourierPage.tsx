@@ -1,14 +1,13 @@
 /**
- * Courier (receiver) page.
+ * Courier page.
  *
- * The courier arrives here either via:
- *   • The share link (fragment contains id + secret)
- *   • Manually entering a delivery id
- *
- * Flow:
- *   1. Load delivery details.
- *   2. Confirm pickup (releases pickup_bps fraction).
- *   3. Enter the secret code → complete delivery (releases remainder).
+ * Secret-flow model:
+ *  - The courier arrives here via the lookup link which contains ONLY the
+ *    delivery id (no secret).
+ *  - The courier confirms pickup on-chain.
+ *  - At physical handoff, the recipient shows the courier their secret code.
+ *    The courier types it in manually.  It is NEVER pre-filled from a URL.
+ *  - complete_delivery is called with the typed secret.
  */
 import { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
@@ -19,14 +18,14 @@ import {
   getDelivery,
   type Delivery,
 } from "../lib/escrow";
-import { parseShareFragment } from "../lib/secret";
+import { parseDeliveryIdFromQuery } from "../lib/secret";
 import { StatusBadge } from "../components/StatusBadge";
 
 type PageState =
   | { phase: "lookup" }
   | { phase: "loading" }
-  | { phase: "loaded"; delivery: Delivery; prefillSecret: string }
-  | { phase: "submitting"; delivery: Delivery; prefillSecret: string }
+  | { phase: "loaded"; delivery: Delivery }
+  | { phase: "submitting"; delivery: Delivery }
   | { phase: "done"; action: "pickup" | "complete" }
   | { phase: "error"; message: string };
 
@@ -35,28 +34,29 @@ export function CourierPage() {
   const location = useLocation();
 
   const [idInput, setIdInput] = useState("");
+  // secretInput is ALWAYS empty on load; the courier types it manually.
   const [secretInput, setSecretInput] = useState("");
   const [state, setState] = useState<PageState>({ phase: "lookup" });
 
   const connected =
     walletState.status === "connected" ? walletState.address : null;
 
-  // Parse fragment on mount.
+  // Read only the delivery id from the URL query string — never the secret.
   useEffect(() => {
-    const parsed = parseShareFragment(location.hash);
-    if (parsed) {
-      setIdInput(parsed.id.toString());
-      setSecretInput(parsed.secret);
-      loadDelivery(parsed.id, parsed.secret);
+    const parsed = parseDeliveryIdFromQuery(location.search);
+    if (parsed !== null) {
+      const idStr = parsed.toString();
+      setIdInput(idStr);
+      loadDelivery(parsed);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function loadDelivery(id: bigint, prefillSecret = "") {
+  async function loadDelivery(id: bigint) {
     setState({ phase: "loading" });
     try {
       const delivery = await getDelivery(id);
-      setState({ phase: "loaded", delivery, prefillSecret });
+      setState({ phase: "loaded", delivery });
     } catch (err) {
       setState({
         phase: "error",
@@ -67,13 +67,13 @@ export function CourierPage() {
 
   async function handleLookup(e: React.FormEvent) {
     e.preventDefault();
-    await loadDelivery(BigInt(idInput), secretInput);
+    await loadDelivery(BigInt(idInput));
   }
 
   async function handleConfirmPickup() {
     if (!connected || state.phase !== "loaded") return;
-    const { delivery, prefillSecret } = state;
-    setState({ phase: "submitting", delivery, prefillSecret });
+    const { delivery } = state;
+    setState({ phase: "submitting", delivery });
     try {
       await confirmPickup(connected, delivery.id);
       setState({ phase: "done", action: "pickup" });
@@ -88,8 +88,8 @@ export function CourierPage() {
   async function handleComplete(e: React.FormEvent) {
     e.preventDefault();
     if (!connected || state.phase !== "loaded") return;
-    const { delivery, prefillSecret } = state;
-    setState({ phase: "submitting", delivery, prefillSecret });
+    const { delivery } = state;
+    setState({ phase: "submitting", delivery });
     try {
       await completeDelivery(connected, delivery.id, secretInput);
       setState({ phase: "done", action: "complete" });
@@ -137,7 +137,7 @@ export function CourierPage() {
 
       {state.phase === "error" && (
         <p className="alert alert--error" role="alert">
-          {state.message}
+          {(state as { phase: "error"; message: string }).message}
         </p>
       )}
 
@@ -154,16 +154,6 @@ export function CourierPage() {
             value={idInput}
             onChange={(e) => setIdInput(e.target.value)}
           />
-
-          <label htmlFor="secret-lookup">Secret code (optional for lookup)</label>
-          <input
-            id="secret-lookup"
-            type="text"
-            placeholder="Paste from share link"
-            value={secretInput}
-            onChange={(e) => setSecretInput(e.target.value)}
-          />
-
           <button
             type="submit"
             disabled={state.phase === "loading"}
@@ -207,14 +197,15 @@ export function CourierPage() {
                 id="secret-complete"
                 type="text"
                 required
-                placeholder="Paste the secret from the sender"
+                placeholder="Ask the recipient to show you their code"
                 value={secretInput}
                 onChange={(e) => setSecretInput(e.target.value)}
                 aria-describedby="secret-hint"
+                autoComplete="off"
               />
               <span id="secret-hint" className="field-hint">
-                The sender shared this code with you — scan their QR or paste from
-                the link.
+                The recipient will show you this code at handoff. Type it here
+                exactly as shown — do not scan a URL.
               </span>
               <button
                 type="submit"

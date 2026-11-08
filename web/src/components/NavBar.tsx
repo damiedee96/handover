@@ -1,12 +1,5 @@
 import { Link } from "react-router-dom";
 import { WalletButton } from "./WalletButton";
-import { ENV, NETWORK_PASSPHRASE } from "../lib/env";
-
-// Derive a short network label from the passphrase for display.
-const NETWORK_LABELS: Record<keyof typeof NETWORK_PASSPHRASE, string> = {
-  TESTNET: "Testnet",
-  MAINNET: "Mainnet",
-};
 
 export function NavBar() {
   return (
@@ -14,7 +7,7 @@ export function NavBar() {
       <Link to="/" className="navbar__brand">
         Handover
       </Link>
-      <span className="navbar__network">{NETWORK_LABELS[ENV.network]}</span>
+      <span className="navbar__network">Testnet</span>
       <div className="navbar__links">
         <Link to="/send">Send</Link>
         <Link to="/receive">Receive</Link>

@@ -1,17 +1,20 @@
 /**
- * Secret helpers: generate a random delivery secret, encode it as a share URL,
- * and decode it back.
+ * Secret helpers.
  *
- * The secret is a 128-bit random value encoded as 22 base-58-ish characters
- * using the URL-safe base64 alphabet. It is displayed as a QR code and shared
- * as a URL fragment (#secret=...) so it never touches a server.
+ * Security model:
+ *  - The SECRET belongs to the RECIPIENT (the person receiving the parcel).
+ *  - The recipient gets the secret from the sender (via QR / share link) and
+ *    reveals it to the courier only at the moment of physical handoff.
+ *  - The courier page NEVER reads the secret from a URL. The courier types it
+ *    manually after the recipient shows it to them.
+ *  - The share URL contains ONLY the delivery id (so the courier can look up
+ *    the delivery). It never encodes the secret.
+ *
+ * The secret itself is a 128-bit random value URL-safe base64 encoded.
+ * Its SHA-256 hash is what goes on-chain; the plaintext never does.
  */
 
-const ALPHABET =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-/** Generate a cryptographically random 16-byte secret and return it as a
- *  URL-safe base64 string (no padding). */
+/** Generate a cryptographically random 128-bit secret as URL-safe base64 (no padding). */
 export function generateSecret(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
@@ -21,36 +24,31 @@ export function generateSecret(): string {
     .replace(/=+$/, "");
 }
 
-/** Build a share URL that encodes the delivery id and secret in the fragment.
- *  Fragment data never reaches the server. */
-export function buildShareUrl(
+/**
+ * Build a courier look-up URL that contains ONLY the delivery id.
+ * The secret is NOT included; the recipient shares it separately at handoff.
+ */
+export function buildCourierLookupUrl(
   baseUrl: string,
   deliveryId: bigint,
-  secret: string,
 ): string {
-  const params = new URLSearchParams({
-    id: deliveryId.toString(),
-    secret,
-  });
-  return `${baseUrl}#${params.toString()}`;
+  const params = new URLSearchParams({ id: deliveryId.toString() });
+  return `${baseUrl}?${params.toString()}`;
 }
 
-/** Parse a share URL fragment back to id + secret, or return null. */
-export function parseShareFragment(fragment: string): {
-  id: bigint;
-  secret: string;
-} | null {
+/**
+ * Parse a delivery id from a courier URL query string, or return null.
+ * The secret is intentionally absent from this URL.
+ */
+export function parseDeliveryIdFromQuery(search: string): bigint | null {
   try {
-    const clean = fragment.startsWith("#") ? fragment.slice(1) : fragment;
-    const params = new URLSearchParams(clean);
+    const params = new URLSearchParams(
+      search.startsWith("?") ? search.slice(1) : search,
+    );
     const id = params.get("id");
-    const secret = params.get("secret");
-    if (!id || !secret) return null;
-    return { id: BigInt(id), secret };
+    if (!id) return null;
+    return BigInt(id);
   } catch {
     return null;
   }
 }
-
-// Keep the alphabet import used to avoid TS noUnusedLocals error.
-void ALPHABET;

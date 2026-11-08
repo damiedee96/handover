@@ -11,7 +11,7 @@ import {
   getAddress,
   signTransaction,
 } from "@stellar/freighter-api";
-import { ENV, NETWORK_PASSPHRASE } from "./env";
+import { NETWORK_PASSPHRASE } from "./env";
 
 export type WalletState =
   | { status: "disconnected" }
@@ -49,7 +49,7 @@ export async function signTx(
   signerAddress: string,
 ): Promise<string> {
   const result = await signTransaction(unsignedXdr, {
-    networkPassphrase: NETWORK_PASSPHRASE[ENV.network],
+    networkPassphrase: NETWORK_PASSPHRASE,
     address: signerAddress,
   });
   if (result.error) {

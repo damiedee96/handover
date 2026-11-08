@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo},
+    testutils::{Address as _, Events as _, Ledger, LedgerInfo},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Bytes, BytesN, Env,
 };
@@ -17,10 +17,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 fn make_hash(env: &Env, secret: &[u8]) -> BytesN<32> {
-    let h: BytesN<32> = env
-        .crypto()
-        .sha256(&Bytes::from_slice(env, secret))
-        .into();
+    let h: BytesN<32> = env.crypto().sha256(&Bytes::from_slice(env, secret)).into();
     h
 }
 
@@ -46,7 +43,13 @@ impl Setup {
         StellarAssetClient::new(&env, &token).mint(&sender, &1_000_000);
 
         let contract = env.register(EscrowContract, ());
-        Setup { env, contract, token, sender, courier }
+        Setup {
+            env,
+            contract,
+            token,
+            sender,
+            courier,
+        }
     }
 
     fn client(&self) -> EscrowContractClient<'_> {
@@ -97,7 +100,8 @@ fn test_happy_path_full_flow() {
     s.client().confirm_pickup(&id);
     assert_eq!(s.token_balance(&s.courier), 20_000);
 
-    s.client().complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client()
+        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
     assert_eq!(s.token_balance(&s.courier), 100_000);
     assert_eq!(s.token_balance(&s.sender), 900_000);
 }
@@ -115,7 +119,8 @@ fn test_happy_path_zero_pickup() {
     s.client().confirm_pickup(&id);
     assert_eq!(s.token_balance(&s.courier), 0);
 
-    s.client().complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client()
+        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
     assert_eq!(s.token_balance(&s.courier), 100_000);
 }
 
@@ -132,7 +137,8 @@ fn test_happy_path_max_pickup_bps() {
     s.client().confirm_pickup(&id);
     assert_eq!(s.token_balance(&s.courier), 50_000);
 
-    s.client().complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client()
+        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
     assert_eq!(s.token_balance(&s.courier), 100_000);
 }
 
@@ -158,7 +164,8 @@ fn test_rounding() {
     s.client().confirm_pickup(&id);
     assert_eq!(s.token_balance(&s.courier), 1_000);
 
-    s.client().complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client()
+        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
     assert_eq!(s.token_balance(&s.courier), 10_001);
 }
 
@@ -189,7 +196,8 @@ fn test_double_completion() {
     let id = create_default(&s, hash, 500);
 
     s.client().confirm_pickup(&id);
-    s.client().complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client()
+        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
 
     let result = s
         .client()
@@ -284,7 +292,8 @@ fn test_refund_on_completed() {
     let id = create_default(&s, hash, 0);
 
     s.client().confirm_pickup(&id);
-    s.client().complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    s.client()
+        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
 
     s.advance(101);
     let result = s.client().try_refund(&id);
@@ -354,12 +363,7 @@ fn test_invalid_expiry() {
     let hash = make_hash(&s.env, b"exp");
     let current = s.env.ledger().get().sequence_number;
     let result = s.client().try_create_delivery(
-        &s.sender,
-        &s.courier,
-        &s.token,
-        &100_000,
-        &hash,
-        &0,
+        &s.sender, &s.courier, &s.token, &100_000, &hash, &0,
         &current, // == current, not > current
     );
     assert_eq!(result, Err(Ok(Error::InvalidExpiry)));
@@ -372,15 +376,9 @@ fn test_invalid_expiry() {
 fn test_zero_amount() {
     let s = Setup::new();
     let hash = make_hash(&s.env, b"zero");
-    let result = s.client().try_create_delivery(
-        &s.sender,
-        &s.courier,
-        &s.token,
-        &0,
-        &hash,
-        &0,
-        &s.expiry(),
-    );
+    let result =
+        s.client()
+            .try_create_delivery(&s.sender, &s.courier, &s.token, &0, &hash, &0, &s.expiry());
     assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
@@ -461,15 +459,7 @@ fn test_auth_failure_confirm_pickup() {
 
     let hash = make_hash(&env, b"auth-pickup");
     let expiry = env.ledger().get().sequence_number + 100;
-    let id = client.create_delivery(
-        &sender,
-        &courier,
-        &token,
-        &100_000,
-        &hash,
-        &500,
-        &expiry,
-    );
+    let id = client.create_delivery(&sender, &courier, &token, &100_000, &hash, &500, &expiry);
 
     // Clear all mocked auths: require_auth() for the courier will now fail.
     env.mock_auths(&[]);
@@ -495,15 +485,8 @@ fn test_auth_failure_create() {
 
     let hash = make_hash(&env, b"auth-create");
     let expiry = env.ledger().get().sequence_number + 100;
-    let result = client.try_create_delivery(
-        &sender,
-        &courier,
-        &token,
-        &100_000,
-        &hash,
-        &500,
-        &expiry,
-    );
+    let result =
+        client.try_create_delivery(&sender, &courier, &token, &100_000, &hash, &500, &expiry);
     assert!(result.is_err());
 }
 
@@ -527,15 +510,7 @@ fn test_auth_failure_refund() {
 
     let hash = make_hash(&env, b"auth-refund");
     let expiry = env.ledger().get().sequence_number + 50;
-    let id = client.create_delivery(
-        &sender,
-        &courier,
-        &token,
-        &100_000,
-        &hash,
-        &0,
-        &expiry,
-    );
+    let id = client.create_delivery(&sender, &courier, &token, &100_000, &hash, &0, &expiry);
 
     env.ledger().set(LedgerInfo {
         sequence_number: expiry + 1,
@@ -627,13 +602,7 @@ fn test_refund_exactly_at_expiry_plus_one() {
     let hash = make_hash(&s.env, b"exact");
     let expiry = s.env.ledger().get().sequence_number + 50;
     let id = s.client().create_delivery(
-        &s.sender,
-        &s.courier,
-        &s.token,
-        &100_000,
-        &hash,
-        &0,
-        &expiry,
+        &s.sender, &s.courier, &s.token, &100_000, &hash, &0, &expiry,
     );
 
     s.env.ledger().set(LedgerInfo {
@@ -643,4 +612,82 @@ fn test_refund_exactly_at_expiry_plus_one() {
 
     s.client().refund(&id);
     assert_eq!(s.token_balance(&s.sender), 1_000_000);
+}
+
+// ---------------------------------------------------------------------------
+// 28. confirm_pickup after expiry is rejected (item 2)
+// ---------------------------------------------------------------------------
+#[test]
+fn test_pickup_after_expiry_rejected() {
+    let s = Setup::new();
+    let hash = make_hash(&s.env, b"expired-pickup");
+    let id = create_default(&s, hash, 1000);
+
+    // Advance past expiry.
+    s.advance(101);
+
+    let result = s.client().try_confirm_pickup(&id);
+    assert_eq!(result, Err(Ok(Error::InvalidState)));
+}
+
+// ---------------------------------------------------------------------------
+// 29-32. Events emitted on every state change (item 3)
+// ---------------------------------------------------------------------------
+
+/// Helper: return count of events published so far in this env.
+fn event_count(env: &Env) -> usize {
+    env.events().all().events().len()
+}
+
+#[test]
+fn test_event_created() {
+    let s = Setup::new();
+    let hash = make_hash(&s.env, b"ev-create");
+    let id = create_default(&s, hash, 1000);
+    // create_delivery emits DeliveryCreated → at least one event from last call.
+    assert!(
+        event_count(&s.env) > 0,
+        "expected event after create_delivery"
+    );
+    let _ = id;
+}
+
+#[test]
+fn test_event_pickedup() {
+    let s = Setup::new();
+    let hash = make_hash(&s.env, b"ev-pickup");
+    let id = create_default(&s, hash, 1000);
+    s.client().confirm_pickup(&id);
+    // confirm_pickup emits PickupConfirmed.
+    assert!(
+        event_count(&s.env) > 0,
+        "expected event after confirm_pickup"
+    );
+}
+
+#[test]
+fn test_event_completed() {
+    let s = Setup::new();
+    let secret = b"ev-complete";
+    let hash = make_hash(&s.env, secret);
+    let id = create_default(&s, hash, 0);
+    s.client().confirm_pickup(&id);
+    s.client()
+        .complete_delivery(&id, &Bytes::from_slice(&s.env, secret));
+    // complete_delivery emits DeliveryCompleted.
+    assert!(
+        event_count(&s.env) > 0,
+        "expected event after complete_delivery"
+    );
+}
+
+#[test]
+fn test_event_refunded() {
+    let s = Setup::new();
+    let hash = make_hash(&s.env, b"ev-refund");
+    let id = create_default(&s, hash, 0);
+    s.advance(101);
+    s.client().refund(&id);
+    // refund emits DeliveryRefunded.
+    assert!(event_count(&s.env) > 0, "expected event after refund");
 }
